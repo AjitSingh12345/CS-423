@@ -1,0 +1,1 @@
+cmd_/home/vboxuser/cs423/mp1/mp1.ko := ld -r -m elf_x86_64 -z max-page-size=0x200000 -T ./scripts/module-common.lds --build-id  -o /home/vboxuser/cs423/mp1/mp1.ko /home/vboxuser/cs423/mp1/mp1.o /home/vboxuser/cs423/mp1/mp1.mod.o ;  true
