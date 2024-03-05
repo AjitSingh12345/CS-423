@@ -9,6 +9,8 @@
 #include <linux/slab.h>
 #include <asm/uaccess.h> 
 #include <linux/uaccess.h>
+#include <linux/timer.h>
+#include <linux/jiffies.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("ajitps2");
@@ -18,6 +20,7 @@ MODULE_DESCRIPTION("CS-423 MP1");
 #define FILENAME 		"status"
 #define DIRECTORY 		"mp1"
 #define PROCFS_MAX_SIZE 	2048
+#define TIMEOUT 		5000    //milliseconds
 
 static struct proc_dir_entry *proc_dir;
 static struct proc_dir_entry *proc_entry;
@@ -25,7 +28,38 @@ static char procfs_buffer[PROCFS_MAX_SIZE];
 static unsigned long procfs_buffer_size = 0;
 static struct registered_processes_list my_list;
 
-// EDIT -> add LinkedList, Kernal Timer, look up two halfes example w work queue
+// TIMER stuff
+static struct timer_list my_timer;
+
+// WORKQUEUE stuff
+struct workqueue_struct *my_workqueue;
+struct work_data {
+    struct work_struct work;
+    int data;
+};
+
+static void work_handler(struct work_struct *work) {
+	struct work_data * data = (struct work_data *)work;
+	printk(KERN_INFO "work handler exec'd \n");
+	kfree(data);
+}
+
+//Timer Callback function. This will be called when timer expires
+void timer_callback(struct timer_list *timer) {	
+	printk(KERN_ALERT "This line is printed after 5 seconds.\n");
+	
+	struct work_data *my_work = kmalloc(sizeof(struct work_data), GFP_KERNEL);
+	INIT_WORK(&my_work->work, work_handler);
+	if (queue_work(my_workqueue, &my_work->work)) {
+		printk(KERN_INFO "error submitting to work_queue \n");
+	}
+
+	// set timer interval to 5 sec 
+	printk(KERN_ALERT "Re-enabling timer \n");	
+	mod_timer(&my_timer, jiffies + msecs_to_jiffies(TIMEOUT));
+
+}
+
 struct registered_processes_list {
 	int pid;
 	unsigned long cpu_time;
@@ -47,13 +81,6 @@ static ssize_t mp1_read(struct file *file, char __user *buffer, size_t count, lo
    
    // EDIT (look into seq files)
    // format: "PID1: CPU Time of PID1\n"
-   // for link in LL {
-   //	fputs(my_buffer, link->pid, len(link->pid);
-   //	fputs(my_buffer, link->cpu_time, len(cpu_time); 
-   // 	copy_to_user(buffer, my_buffer, len(my_buffer))
-   //	clear(my_buffer);
-   // }
-
    struct list_head *pos, *q;
    struct registered_processes_list* tmp;
    int j = 0;
@@ -132,6 +159,12 @@ int __init mp1_init(void)
 
    // Insert your code here ...
 
+   // init timer
+   timer_setup(&my_timer, timer_callback, 0);
+
+   // set timer interval to 5 sec 
+   mod_timer(&my_timer, jiffies + msecs_to_jiffies(TIMEOUT));
+
    // create direc and entry within proc filesys
    proc_dir = proc_mkdir(DIRECTORY, NULL);
    if (!proc_dir) {
@@ -148,6 +181,9 @@ int __init mp1_init(void)
    // init list
    INIT_LIST_HEAD(&my_list.list);     
 
+   // init workqueue
+   my_workqueue = create_workqueue("my_workqueue");
+
    printk(KERN_ALERT "MP1 MODULE LOADED\n");
    return 0;   
 }
@@ -161,10 +197,29 @@ void __exit mp1_exit(void)
 
    // Insert your code here ...   
    
-   // EDIT -> destroy timer, kfree all LL nodes, stop pending work func, destory workqueue
+   // EDIT -> kfree all LL nodes, stop pending work func, destory workqueue
+
+
+   // free all LL nodes
+   printk("deleting the list using list_for_each_safe()\n");
+   struct list_head *pos, *q;
+   struct registered_processes_list* tmp;
+   list_for_each_safe(pos, q, &my_list.list) {
+   	tmp= list_entry(pos, struct registered_processes_list, list);
+	printk("freeing item pid= %d cpu_time= %lu\n", tmp->pid, tmp->cpu_time);
+	list_del(pos);
+	kfree(tmp);
+   }
 
    remove_proc_entry(FILENAME, proc_dir);
    remove_proc_entry(DIRECTORY, NULL);
+
+   // destory kernel timer
+   del_timer(&my_timer);
+
+   // flush & destory workqueue -- CANCEL REMAINING WORK??
+   flush_workqueue(my_workqueue);
+   destroy_workqueue(my_workqueue);
 
    printk(KERN_ALERT "MP1 MODULE UNLOADED\n");
 }
