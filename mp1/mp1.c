@@ -24,8 +24,8 @@ MODULE_DESCRIPTION("CS-423 MP1");
 
 static struct proc_dir_entry *proc_dir;
 static struct proc_dir_entry *proc_entry;
-static char procfs_buffer[PROCFS_MAX_SIZE];
-static unsigned long procfs_buffer_size = 0;
+// static char procfs_buffer[PROCFS_MAX_SIZE];
+// static unsigned long procfs_buffer_size = 0;
 static struct registered_processes_list my_list;
 
 // TIMER stuff
@@ -38,8 +38,39 @@ struct work_data {
     int data;
 };
 
+// mutex
+struct mutex my_mutex;
+
+// linked list
+struct registered_processes_list {
+	int pid;
+	unsigned long cpu_time;
+	struct list_head list;
+};
+
+
 static void work_handler(struct work_struct *work) {
 	struct work_data * data = (struct work_data *)work;
+
+	struct registered_processes_list  *pos, *q;
+	unsigned long cpu_time_;
+	mutex_lock(&my_mutex);
+	list_for_each_entry_safe(pos, q, &my_list.list, list) {
+		// tmp = list_entry(pos, struct registered_processes_list, list);
+		if (get_cpu_use(pos->pid, &pos->cpu_time)) {
+       			printk(KERN_INFO "process %d doesnt exist anymore -> remove from list \n", pos->pid);
+			printk("freeing item pid= %d cpu_time= %lu\n", pos->pid, pos->cpu_time);
+			list_del(&pos->list);
+			kfree(pos);
+		} else {
+			// printk(KERN_INFO "update list entry: pid = %d, cpu_time = %lu \n", tmp->pid, tmp->cpu_time);
+			// pos->cpu_time = cpu_time_;
+		}
+		// tmp->cpu_time = -1;
+	}
+	mutex_unlock(&my_mutex);
+	
+
 	printk(KERN_INFO "work handler exec'd \n");
 	kfree(data);
 }
@@ -50,7 +81,7 @@ void timer_callback(struct timer_list *timer) {
 	
 	struct work_data *my_work = kmalloc(sizeof(struct work_data), GFP_KERNEL);
 	INIT_WORK(&my_work->work, work_handler);
-	if (queue_work(my_workqueue, &my_work->work)) {
+	if (!queue_work(my_workqueue, &my_work->work)) {
 		printk(KERN_INFO "error submitting to work_queue \n");
 	}
 
@@ -60,15 +91,11 @@ void timer_callback(struct timer_list *timer) {
 
 }
 
-struct registered_processes_list {
-	int pid;
-	unsigned long cpu_time;
-	struct list_head list;
-};
-
 
 // read
 static ssize_t mp1_read(struct file *file, char __user *buffer, size_t count, loff_t *data) {
+   static unsigned long procfs_buffer_size = 0;
+   static char procfs_buffer[PROCFS_MAX_SIZE];
    static int finished = 0;
    
    if (finished) {
@@ -85,11 +112,14 @@ static ssize_t mp1_read(struct file *file, char __user *buffer, size_t count, lo
    struct registered_processes_list* tmp;
    int j = 0;
 
+   mutex_lock(&my_mutex);
    list_for_each(pos, &my_list.list) {
         tmp = list_entry(pos, struct registered_processes_list, list);
         printk(KERN_INFO "read list entry: pid = %d, cpu_time = %lu, j: %d \n", tmp->pid, tmp->cpu_time, j);
         j += sprintf(procfs_buffer+j, "%d: %lu\n", tmp->pid, tmp->cpu_time);
    }
+   // sprintf(procfs_buffer+j, "\0");
+   mutex_unlock(&my_mutex);
 
    if (copy_to_user(buffer, procfs_buffer, sizeof(procfs_buffer))) {
         return -EFAULT;
@@ -101,7 +131,9 @@ static ssize_t mp1_read(struct file *file, char __user *buffer, size_t count, lo
 // write
 static ssize_t mp1_write(struct file *file, const char __user *buffer, size_t count, loff_t *data) {
    printk(KERN_INFO "procfs_write: write %lu bytes\n", count);
-   
+   static unsigned long procfs_buffer_size = 0;
+   static char procfs_buffer[PROCFS_MAX_SIZE];
+
    // EDIT -> no matter what user writed, we just regiter their PID unless its alr registered
    // ** IMPORTANT -> PID is written from user app so we have to do get_from_user
    if (count > PROCFS_MAX_SIZE) {
@@ -122,23 +154,28 @@ static ssize_t mp1_write(struct file *file, const char __user *buffer, size_t co
    // check if this pid is alr in registered_processes_list
    struct list_head *pos, *q;
    struct registered_processes_list* tmp;
-
+   mutex_lock(&my_mutex);
    list_for_each(pos, &my_list.list) {
 	tmp = list_entry(pos, struct registered_processes_list, list);
 	printk(KERN_INFO "write list entry: pid = %d, cpu_time = %lu \n", tmp->pid, tmp->cpu_time);
 	if (tmp->pid == _pid) {
+		mutex_unlock(&my_mutex);
 		return procfs_buffer_size;
 	}
    }
+   mutex_unlock(&my_mutex);
    
    // if not, kmalloc a new node and add this new entry using get_cpu_time from given.c
    tmp = (struct registered_processes_list*)kmalloc(sizeof(struct registered_processes_list), GFP_KERNEL);
    tmp->pid = _pid; 
-   tmp->cpu_time = -1;
+   tmp->cpu_time = 0;
    if (get_cpu_use(tmp->pid, &tmp->cpu_time)) {
 	printk(KERN_INFO "process %d doesnt exist to get cpu time \n", tmp->pid);
    } // DO ERROR CHECKING??
-   list_add(&(tmp->list), &(my_list.list));  
+
+   mutex_lock(&my_mutex);
+   list_add_tail(&(tmp->list), &(my_list.list));  
+   mutex_unlock(&my_mutex);
    printk(KERN_INFO "Added to list: process %d: cpu time %lu \n", tmp->pid, tmp->cpu_time);
 
    return procfs_buffer_size;
@@ -161,6 +198,9 @@ int __init mp1_init(void)
 
    // init timer
    timer_setup(&my_timer, timer_callback, 0);
+
+   // init mutex
+   mutex_init(&my_mutex);
 
    // set timer interval to 5 sec 
    mod_timer(&my_timer, jiffies + msecs_to_jiffies(TIMEOUT));
@@ -197,7 +237,12 @@ void __exit mp1_exit(void)
 
    // Insert your code here ...   
    
-   // EDIT -> kfree all LL nodes, stop pending work func, destory workqueue
+   // destory kernel timer
+   del_timer(&my_timer);
+
+   // flush & destory workqueue -- CANCEL REMAINING WORK??
+   flush_workqueue(my_workqueue);
+   destroy_workqueue(my_workqueue);
 
 
    // free all LL nodes
@@ -213,13 +258,6 @@ void __exit mp1_exit(void)
 
    remove_proc_entry(FILENAME, proc_dir);
    remove_proc_entry(DIRECTORY, NULL);
-
-   // destory kernel timer
-   del_timer(&my_timer);
-
-   // flush & destory workqueue -- CANCEL REMAINING WORK??
-   flush_workqueue(my_workqueue);
-   destroy_workqueue(my_workqueue);
 
    printk(KERN_ALERT "MP1 MODULE UNLOADED\n");
 }
