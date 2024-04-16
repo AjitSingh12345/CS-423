@@ -1,7 +1,15 @@
+#define LINUX
+
 #include <linux/module.h>	/* Specifically, a module */
 #include <linux/kernel.h>	/* We're doing kernel work */
 #include <linux/proc_fs.h>	/* Necessary because we use the proc fs */
-#include <asm/uaccess.h>	/* for copy_from_user */
+#include "mp2_given.h"
+//#include <stdio.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h> 
+#include <linux/uaccess.h>
+#include <linux/timer.h>
+#include <linux/jiffies.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("ajitps2");
@@ -18,27 +26,20 @@ static struct proc_dir_entry *proc_entry;
 static char procfs_buffer[PROCFS_MAX_SIZE];
 static unsigned long procfs_buffer_size = 0;
 
-static ssize_t mp2_read(char *buffer,
-	      char **buffer_location,
-	      off_t offset, int buffer_length, int *eof, void *data)
+static ssize_t mp2_read(struct file *file, char __user *buffer, size_t count, loff_t *offp)
 {
-	int ret;
-	
-	printk(KERN_INFO "procfile_read (/proc/%s) called\n", FILENAME);
-	
-	if (offset > 0) {
-		/* we have finished to read, return 0 */
-		ret  = 0;
-	} else {
-		/* fill the buffer, return the buffer size */
-		memcpy(buffer, procfs_buffer, procfs_buffer_size);
-		ret = procfs_buffer_size;
-	}
+	ssize_t bytes_read;
+	char *buf;
+	unsigned long flags;
 
-	return ret;
+	buf = (char*)kmalloc(count, GFP_KERNEL);
+
+	// critical section
+	// spin_lock_irqsave(&mp2_lock, flags);
+	return count;	
 }
-
-// proc file is written to
+	
+// for when file is written to
 static ssize_t mp2_write(struct file *file, const char __user *buffer, size_t count, loff_t *data) 
 {
 	printk(KERN_INFO "procfs_write: write %lu bytes\n", count);
@@ -56,7 +57,7 @@ static ssize_t mp2_write(struct file *file, const char __user *buffer, size_t co
 	return procfs_buffer_size;
 }
 
-static const struct file_operations mp1_file = 
+static const struct file_operations mp2_file = 
 {
 	.owner = THIS_MODULE,
 	.read = mp2_read,
@@ -69,6 +70,22 @@ int __init mp2_init(void)
 	#ifdef DEBUG
 	printk(KERN_ALERT "MP2 MODULE LOADING\n");
    	#endif
+
+	// create direc and entry within proc filesys
+  	 proc_dir = proc_mkdir(DIRECTORY, NULL);
+   	if (!proc_dir) {
+        	printk(KERN_ALERT "Error: Could not initialize directory /proc/%s\n", DIRECTORY);
+		return -ENOMEM;
+	} 
+
+   	proc_entry = proc_create(FILENAME, 0666, proc_dir, &mp2_file);
+  	if (!proc_entry) {
+		printk(KERN_ALERT "Error: Could not initialize entry /proc/%s\n", FILENAME);
+   		return -ENOMEM;
+	}
+
+	printk(KERN_ALERT "MP2 MODULE LOADED\n");
+  	return 0;   
 }
 
 // exit -- called when module is unloaded
@@ -77,6 +94,11 @@ void __exit mp2_exit(void)
 	#ifdef DEBUG
         printk(KERN_ALERT "MP2 MODULE UNLOADING\n");
         #endif
+
+	remove_proc_entry(FILENAME, proc_dir);
+   	remove_proc_entry(DIRECTORY, NULL);
+	
+	printk(KERN_ALERT "MP2 MODULE UNLOADED\n");
 }
 
 module_init(mp2_init);
